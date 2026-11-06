@@ -5,9 +5,9 @@ SAM 2's video predictor is the natural fit here -- prompt the subject once on
 the first frame and it propagates the mask through the rest, which is exactly
 the shape of this problem (one static subject, a slow orbit).
 
-Install separately (it is NOT in AnySplat's requirements):
-    pip install git+https://github.com/facebookresearch/sam2.git
-and download a checkpoint, e.g. sam2.1_hiera_large.pt
+Install separately (it needs torch>=2.5.1, so it cannot share AnySplat's env):
+scripts/install.sh sets up a "sam2" conda env and downloads
+sam2.1_hiera_large.pt. Run this script with that env's python.
 
 Prompt with a box around the subject in frame 0 (easiest), or with points:
     python make_masks_sam2.py --frames frames/ --out masks/ \\
@@ -73,8 +73,8 @@ def main():
         import torch
         from sam2.build_sam import build_sam2_video_predictor
     except ImportError as e:
-        sys.exit(f"SAM 2 not installed ({e}). "
-                 f"pip install git+https://github.com/facebookresearch/sam2.git")
+        sys.exit(f"SAM 2 not importable ({e}). Run this with the sam2 env's "
+                 f"python (see scripts/install.sh).")
 
     frames_dir, orig_paths, tmp = as_jpeg_dir(args.frames)
     out = Path(args.out)

@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Splat Capture</title>
+<style>
+  :root { --bg: #f6f6f4; --card: #fff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dd;
+          --accent: #c2410c; --ok: #15803d; --bad: #b91c1c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161615; --card: #1f1f1d; --text: #ededea; --muted: #a3a39d; --line: #33332f;
+            --accent: #fb923c; --ok: #4ade80; --bad: #f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 34rem; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  p.lede { color: var(--muted); margin: 0 0 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  label.pick { display: block; text-align: center; padding: 22px 12px; border: 2px dashed var(--line);
+               border-radius: 10px; cursor: pointer; font-weight: 600; }
+  input[type=file] { display: none; }
+  button { width: 100%; margin-top: 12px; padding: 14px; border: 0; border-radius: 10px;
+           background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  progress { width: 100%; height: 10px; margin-top: 12px; accent-color: var(--accent); }
+  .status { margin-top: 10px; font-weight: 600; }
+  .muted { color: var(--muted); font-size: .9rem; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  #jobs { list-style: none; margin: 8px 0 0; padding: 0; }
+  #jobs li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); font-size: .9rem; }
+  #jobs li:first-child { border-top: 0; }
+  #jobs li span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  ol.tips { margin: 0; padding-left: 1.2rem; color: var(--muted); font-size: .9rem; }
+  ol.tips li + li { margin-top: 6px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Splat Capture</h1>
+  <p class="lede">Upload a video of the object, then pick it in the headset.</p>
+
+  <div class="card">
+    <label class="pick" for="file" id="pickLabel">Choose or record a video</label>
+    <input type="file" id="file" accept="video/*">
+    <button id="upload" disabled>Upload</button>
+    <progress id="bar" max="1" value="0" hidden></progress>
+    <div class="status" id="status"></div>
+    <div class="muted" id="detail"></div>
+  </div>
+
+  <div class="card">
+    <ol class="tips">
+      <li>Walk slowly all the way around the object, 20&ndash;40 seconds.</li>
+      <li>Keep it in the middle of the frame and avoid fast turns (blur).</li>
+      <li>After uploading, open Quest Splat Viewer: the first frame appears in front of you.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <strong>Recent uploads</strong>
+    <ul id="jobs"><li class="muted">none yet</li></ul>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const STATE_TEXT = {
+  uploaded: "Uploaded", extracting: "Extracting frames",
+  awaiting_prompt: "Pick the object in the headset", working: "Reconstructing",
+  done: "Ready in the headset", failed: "Failed",
+};
+let file = null, watching = null;
+
+$("file").addEventListener("change", e => {
+  file = e.target.files[0] || null;
+  $("pickLabel").textContent = file ? `${file.name} (${(file.size / 1e6).toFixed(1)} MB)` : "Choose or record a video";
+  $("upload").disabled = !file;
+});
+
+$("upload").addEventListener("click", () => {
+  if (!file) return;
+  $("upload").disabled = true;
+  $("bar").hidden = false;
+  setStatus("Uploading...", "");
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/jobs?name=" + encodeURIComponent(file.name));
+  xhr.upload.onprogress = e => { if (e.lengthComputable) $("bar").value = e.loaded / e.total; };
+  xhr.onload = () => {
+    let body = {};
+    try { body = JSON.parse(xhr.responseText); } catch (_) {}
+    if (xhr.status === 201) { watch(body.id); }
+    else { setStatus("Upload failed", body.error || `HTTP ${xhr.status}`, "bad"); $("upload").disabled = false; }
+  };
+  xhr.onerror = () => { setStatus("Upload failed", "network error", "bad"); $("upload").disabled = false; };
+  xhr.send(file);
+});
+
+function setStatus(text, detail, cls) {
+  $("status").textContent = text;
+  $("status").className = "status " + (cls || "");
+  $("detail").textContent = detail || "";
+}
+
+function watch(id) {
+  clearInterval(watching);
+  const tick = async () => {
+    try {
+      const s = await (await fetch("/api/jobs/" + id)).json();
+      const cls = s.state === "done" ? "ok" : s.state === "failed" ? "bad" : "";
+      const extra = s.state === "done" && s.splats ? `${s.splats.toLocaleString()} splats` : (s.error || s.message);
+      setStatus(STATE_TEXT[s.state] || s.state, extra, cls);
+      if (s.state === "failed") clearInterval(watching);
+      refreshJobs();
+    } catch (_) {}
+  };
+  tick();
+  watching = setInterval(tick, 2000);
+}
+
+async function refreshJobs() {
+  try {
+    const jobs = await (await fetch("/api/jobs")).json();
+    $("jobs").innerHTML = "";
+    if (!jobs.length) { $("jobs").innerHTML = '<li class="muted">none yet</li>'; return; }
+    for (const j of jobs.slice(0, 8)) {
+      const li = document.createElement("li");
+      const a = document.createElement("span"); a.textContent = j.name;
+      const b = document.createElement("span"); b.className = "muted"; b.textContent = STATE_TEXT[j.state] || j.state;
+      li.append(a, b); $("jobs").append(li);
+    }
+  } catch (_) {}
+}
+refreshJobs();
+</script>
+</body>
+</html>

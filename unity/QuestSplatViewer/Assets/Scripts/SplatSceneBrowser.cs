@@ -23,9 +23,9 @@ namespace QuestSplatViewer
                  "capture relative to the player without touching the splat data.")]
         public Transform splatRoot;
 
-        [Tooltip("Loaded automatically on start if present; otherwise the first " +
-                 "file found is used.")]
-        public string preferredFileName = "quest.ply";
+        [Tooltip("Show the newest saved splat at launch. Off: start with an empty " +
+                 "scene and show only what is captured this session.")]
+        public bool loadOnStart = false;
 
         static readonly string[] Extensions = { "*.ply", "*.spz", "*.sog" };
 
@@ -37,6 +37,7 @@ namespace QuestSplatViewer
         {
             if (splatRoot == null) splatRoot = transform;
             Refresh();
+            if (!loadOnStart) return;
             if (Discovered.Count == 0)
             {
                 Debug.LogWarning($"[Splat] no splat files found. Push one with:\n" +
@@ -44,10 +45,11 @@ namespace QuestSplatViewer
                 return;
             }
 
-            int index = Discovered.FindIndex(
-                p => Path.GetFileName(p).Equals(preferredFileName,
-                     System.StringComparison.OrdinalIgnoreCase));
-            Load(Discovered[index >= 0 ? index : 0]);
+            // Newest first: the last capture downloaded or adb-pushed.
+            string newest = Discovered[0];
+            foreach (var p in Discovered)
+                if (File.GetLastWriteTimeUtc(p) > File.GetLastWriteTimeUtc(newest)) newest = p;
+            Load(newest);
         }
 
         public void Refresh()
@@ -73,12 +75,15 @@ namespace QuestSplatViewer
 
         public void Load(string path)
         {
-            if (current != null) Destroy(current);
+            SplatLoaderAdapter.Unload(current);
             current = SplatLoaderAdapter.Load(path, splatRoot);
             if (current != null) LoadedPath = path;
         }
 
         public string LoadedPath { get; private set; }
+
+        /// <summary>The splat currently shown, or null.</summary>
+        public GameObject Current => current;
 
         /// <summary>Cycle to the next discovered file, for quick A/B on device.</summary>
         public void LoadNext()

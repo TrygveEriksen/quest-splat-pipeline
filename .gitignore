@@ -1,0 +1,16 @@
+# Pipeline outputs (pipeline.sh default workdir, splat_server.py jobs)
+/work*/
+/jobs/
+/frames/
+/masks/
+/raw/
+/box.txt
+*.ply
+*.mp4
+*.mov
+
+# Python
+__pycache__/
+*.pyc
+
+# The Unity project has its own .gitignore in unity/QuestSplatViewer/

@@ -80,6 +80,27 @@ def morph(mask, pixels):
     return out
 
 
+def model_to_mask_px(u, v, w, h, mw, mh):
+    """Map pixels in the model's input frame (w x h) to mask pixels (mw x mh).
+
+    The model never sees the full frame: AnySplat's process_image (and
+    run_anysplat's fallback) scales the SHORT side to w and centre-crops to
+    w x h. Masks are made on the original frames, so undo that crop+resize.
+    Stretching the square model frame over a non-square mask instead shifts
+    the subject off its own mask in every view. Identity when the masks are
+    already w x h.
+    """
+    if mw > mh:
+        new_h = h
+        new_w = int(mw * (new_h / mh))
+    else:
+        new_w = w
+        new_h = int(mh * (new_w / mw))
+    left = (new_w - w) // 2
+    top = (new_h - h) // 2
+    return (u + left) * (mw / new_w), (v + top) * (mh / new_h)
+
+
 def load_masks(mask_dir, count):
     exts = {".png", ".jpg", ".jpeg", ".bmp"}
     paths = sorted(p for p in Path(mask_dir).iterdir() if p.suffix.lower() in exts)
@@ -147,9 +168,11 @@ def main():
         if not in_frame.any():
             continue
 
-        # Mask resolution need not match the projection frame.
-        mx = np.clip((u[in_frame] / w * mw).astype(np.int64), 0, mw - 1)
-        my = np.clip((v[in_frame] / h * mh).astype(np.int64), 0, mh - 1)
+        # Masks are at the original frame resolution, not the model's
+        # centre-cropped input, so map through the crop rather than stretch.
+        fx, fy = model_to_mask_px(u[in_frame], v[in_frame], w, h, mw, mh)
+        mx = np.clip(fx.astype(np.int64), 0, mw - 1)
+        my = np.clip(fy.astype(np.int64), 0, mh - 1)
 
         idx = np.flatnonzero(in_frame)
         votes_seen[idx] += 1

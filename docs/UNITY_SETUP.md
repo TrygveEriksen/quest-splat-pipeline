@@ -1,8 +1,18 @@
 # Unity project setup for Quest 2
 
-The Unity project itself has to be created in the Editor (it can't be generated
-from here), so this is the exact settings list. The `Assets/Scripts/` files in
-this repo drop straight into it.
+The project now lives in `unity/QuestSplatViewer` (Unity 6000.6.8f1, URP),
+and `Assets/Editor/QuestProjectSetup.cs` applies sections 2-4, the MSAA / HDR /
+shadow rows of 5, and the scene in 8 from the command line, with an Editor
+running that project. Foveation (6), render scale, and the splat sorter
+settings (7) are not applied yet.
+
+```bash
+unity command eval "return QuestSplatViewer.EditorTools.QuestProjectSetup.Apply();"
+unity command eval "return QuestSplatViewer.EditorTools.QuestProjectSetup.BuildApk();" --detach
+```
+
+The same two actions are in the Editor's **Quest Splat Viewer** menu. This file
+remains the reasoning behind each setting; change the script to change one.
 
 ## Why these choices
 

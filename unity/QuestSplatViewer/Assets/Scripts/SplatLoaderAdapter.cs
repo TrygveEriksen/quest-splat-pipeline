@@ -1,24 +1,31 @@
 using System;
 using System.IO;
+using Gsplat;
 using UnityEngine;
 
 namespace QuestSplatViewer
 {
     /// <summary>
-    /// The ONLY place that touches the UnitySplats package API.
+    /// The ONLY place that touches the UnitySplats package API
+    /// (com.arloopa.unitysplats, pinned to a commit in Packages/manifest.json).
     ///
-    /// That API surface is taken from the package README rather than verified
-    /// against a compiled project, so if the package has moved on, this is the
-    /// single file to fix -- nothing else in the app references the package.
-    ///
-    /// Expected upstream shape (arloopa/UnitySplats, Unity 6):
-    ///     GsplatRuntimeLoader.LoadFile(string absolutePath, CompressionMode mode)
-    /// returning a component/handle that can be parented into the scene.
+    /// GsplatRuntimeLoader.LoadFile decodes a .ply/.spz/.sog into an in-memory
+    /// GsplatAsset; a GsplatRenderer on a GameObject draws it. The asset is not
+    /// owned by the GameObject, so it has to be destroyed explicitly -- use
+    /// <see cref="Unload"/> rather than Destroy on the returned object.
     /// </summary>
     public static class SplatLoaderAdapter
     {
         /// <summary>
-        /// Load a .ply/.spz splat file and return the GameObject holding it.
+        /// The frame pipeline.sh writes PLYs in: standard 3DGS / OpenCV, x right,
+        /// y down, z forward -- the same file previews upright in SuperSplat. The
+        /// package converts it to Unity's x right, y up, z forward on load, for
+        /// positions, rotations and SH alike, so no flip is baked into the file.
+        /// </summary>
+        const SourceCoordinates PlyFrame = SourceCoordinates.RDF;
+
+        /// <summary>
+        /// Load a .ply/.spz/.sog splat file and return the GameObject drawing it.
         /// Returns null and logs on failure; callers must handle null.
         /// </summary>
         public static GameObject Load(string absolutePath, Transform parent)
@@ -31,44 +38,17 @@ namespace QuestSplatViewer
 
             try
             {
-                // ---------------------------------------------------------
-                // ADAPT HERE if the package API differs. Reflection keeps the
-                // app compiling even before the package is installed, so you
-                // can build and deploy the shell first and wire the renderer
-                // once you've confirmed the real method signature.
-                // ---------------------------------------------------------
-                var loaderType = Type.GetType("GsplatRuntimeLoader")
-                                 ?? Type.GetType("UnitySplats.GsplatRuntimeLoader");
-                if (loaderType == null)
-                {
-                    Debug.LogError("[Splat] GsplatRuntimeLoader not found. Install the " +
-                                   "UnitySplats package, then confirm the type name here.");
-                    return null;
-                }
+                // Spark is the package's packed format: far less GPU memory and
+                // upload time than Uncompressed, which matters on a Quest.
+                GsplatAsset asset = GsplatRuntimeLoader.LoadFile(
+                    absolutePath, CompressionMode.Spark, PlyFrame);
 
-                var method = loaderType.GetMethod("LoadFile",
-                    new[] { typeof(string) }) ?? loaderType.GetMethod("LoadFile");
-                if (method == null)
-                {
-                    Debug.LogError("[Splat] GsplatRuntimeLoader.LoadFile not found.");
-                    return null;
-                }
-
-                var parameters = method.GetParameters();
-                object result = parameters.Length == 1
-                    ? method.Invoke(null, new object[] { absolutePath })
-                    : method.Invoke(null, new object[] { absolutePath, null });
-
-                var go = result as GameObject ?? (result as Component)?.gameObject;
-                if (go == null)
-                {
-                    Debug.LogError($"[Splat] loader returned {result?.GetType().Name ?? "null"}, " +
-                                   "which is not a GameObject or Component.");
-                    return null;
-                }
-
+                var go = new GameObject(Path.GetFileNameWithoutExtension(absolutePath));
                 go.transform.SetParent(parent, worldPositionStays: false);
-                Debug.Log($"[Splat] loaded {Path.GetFileName(absolutePath)}");
+                go.AddComponent<GsplatRenderer>().GsplatAsset = asset;
+
+                Debug.Log($"[Splat] loaded {Path.GetFileName(absolutePath)}: " +
+                          $"{asset.SplatCount:N0} splats");
                 return go;
             }
             catch (Exception e)
@@ -76,6 +56,39 @@ namespace QuestSplatViewer
                 Debug.LogError($"[Splat] load failed for {absolutePath}: {e}");
                 return null;
             }
+        }
+
+        /// <summary>World-space box around a loaded splat, from its asset's bounds.</summary>
+        public static bool TryGetWorldBounds(GameObject splat, out Bounds bounds)
+        {
+            bounds = default;
+            var renderer = splat != null ? splat.GetComponent<GsplatRenderer>() : null;
+            if (renderer == null || renderer.GsplatAsset == null) return false;
+
+            Bounds local = renderer.GsplatAsset.Bounds;
+            for (int i = 0; i < 8; i++)
+            {
+                var corner = local.center + Vector3.Scale(local.extents, new Vector3(
+                    (i & 1) == 0 ? -1 : 1, (i & 2) == 0 ? -1 : 1, (i & 4) == 0 ? -1 : 1));
+                var world = splat.transform.TransformPoint(corner);
+                if (i == 0) bounds = new Bounds(world, Vector3.zero);
+                else bounds.Encapsulate(world);
+            }
+            return true;
+        }
+
+        /// <summary>Destroy a splat loaded by <see cref="Load"/>, and its asset.</summary>
+        public static void Unload(GameObject splat)
+        {
+            if (splat == null) return;
+            var renderer = splat.GetComponent<GsplatRenderer>();
+            if (renderer != null && renderer.GsplatAsset != null)
+            {
+                var asset = renderer.GsplatAsset;
+                renderer.GsplatAsset = null;
+                UnityEngine.Object.Destroy(asset);
+            }
+            UnityEngine.Object.Destroy(splat);
         }
     }
 }

@@ -19,30 +19,34 @@ namespace QuestSplatViewer
         public float yawRate = 60f;         // degrees per second
         public float heightRate = 0.5f;     // metres per second
 
+        // Bound by usage rather than control name, so any OpenXR controller
+        // profile that reports a primary 2D axis (Touch thumbsticks) works.
         [Header("Input (right stick scales/yaws, left stick raises)")]
-        public InputActionReference scaleYawAction;
-        public InputActionReference heightAction;
+        public InputAction scaleYawAction = new InputAction("ScaleYaw", InputActionType.Value,
+            "<XRController>{RightHand}/{Primary2DAxis}", expectedControlType: "Vector2");
+        public InputAction heightAction = new InputAction("Height", InputActionType.Value,
+            "<XRController>{LeftHand}/{Primary2DAxis}", expectedControlType: "Vector2");
 
         float accumulatedScale = 1f;
 
         void OnEnable()
         {
-            scaleYawAction?.action?.Enable();
-            heightAction?.action?.Enable();
+            scaleYawAction.Enable();
+            heightAction.Enable();
         }
 
         void OnDisable()
         {
-            scaleYawAction?.action?.Disable();
-            heightAction?.action?.Disable();
+            scaleYawAction.Disable();
+            heightAction.Disable();
         }
 
         void Update()
         {
             if (splatRoot == null) return;
 
-            Vector2 sy = scaleYawAction?.action?.ReadValue<Vector2>() ?? Vector2.zero;
-            Vector2 hv = heightAction?.action?.ReadValue<Vector2>() ?? Vector2.zero;
+            Vector2 sy = scaleYawAction.ReadValue<Vector2>();
+            Vector2 hv = heightAction.ReadValue<Vector2>();
 
             if (Mathf.Abs(sy.y) > 0.1f)
             {
