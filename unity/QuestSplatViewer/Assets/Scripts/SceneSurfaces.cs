@@ -23,8 +23,8 @@ namespace QuestSplatViewer
         const string ScenePermission = "com.oculus.permission.USE_SCENE";
 
         public ARPlaneManager planes;
-        [Tooltip("How far below a point to look for a surface, in metres.")]
-        public float maxDrop = 0.75f;
+        [Tooltip("How far above a surface a release still snaps onto it, in metres. Further up, the splat stays where it was let go.")]
+        public float maxDrop = 0.05f;
 
         public int Count => planes != null && planes.enabled ? planes.trackables.count : 0;
 

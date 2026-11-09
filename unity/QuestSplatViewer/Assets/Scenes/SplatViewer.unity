@@ -360,7 +360,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::QuestSplatViewer.SceneSurfaces
   planes: {fileID: 23036646}
-  maxDrop: 0.75
+  maxDrop: 0.05
 --- !u!114 &241055754
 MonoBehaviour:
   m_ObjectHideFlags: 0
