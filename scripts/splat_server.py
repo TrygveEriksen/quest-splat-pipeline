@@ -27,6 +27,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 from http import HTTPStatus
@@ -57,6 +58,76 @@ def find_conda():
 
 class StepFailed(Exception):
     pass
+
+
+WORKER_MARK = b"\x01QSVMSG\x01"   # must match worker_proto.MARK
+
+
+class Worker:
+    """A resident model process (run_*.py --serve): load the model once, then
+    serve one job per request so the heavy weights are never reloaded.
+
+    The worker's single output pipe carries both its log text and its result
+    messages; a result is a line containing WORKER_MARK. Only one job runs on a
+    worker at a time (the GPU lock already serialises the GPU stages), so a
+    synchronous read loop can both tee the log into the active job's log.txt and
+    wait for that job's result on the same stream -- no two-pipe race.
+    """
+
+    def __init__(self, name, cmd, env):
+        self.name = name
+        self.cmd = cmd
+        self.env = env
+        self.lock = threading.Lock()
+        self.ready = threading.Event()
+        self.proc = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, env=env)
+        threading.Thread(target=self._await_ready, daemon=True).start()
+
+    def _pump(self, sink):
+        """Read lines until a WORKER_MARK result line, feeding the plain ones to
+        sink(bytes). Returns the parsed result dict, or None if the worker died."""
+        for raw in iter(self.proc.stdout.readline, b""):
+            i = raw.find(WORKER_MARK)
+            if i != -1:
+                try:
+                    return json.loads(raw[i + len(WORKER_MARK):].strip() or b"{}")
+                except Exception as e:
+                    return {"ok": False, "error": f"bad worker message: {e}"}
+            sink(raw)
+        return None
+
+    def _await_ready(self):
+        def console(b):
+            try:
+                sys.stdout.write(f"[{self.name}] " + b.decode("utf-8", "replace"))
+                sys.stdout.flush()
+            except Exception:
+                pass
+        msg = self._pump(console)
+        if msg and msg.get("ready"):
+            log(f"{self.name} worker ready")
+            self.ready.set()
+        else:
+            log(f"{self.name} worker failed to start: {msg}")
+
+    def run(self, logfile, request):
+        if not self.ready.wait(timeout=600):
+            raise StepFailed(f"{self.name} worker never became ready")
+        with self.lock:
+            if self.proc.poll() is not None:
+                raise StepFailed(f"{self.name} worker has exited "
+                                 f"(code {self.proc.returncode})")
+            with open(logfile, "ab", buffering=0) as lf:
+                self.proc.stdin.write((json.dumps(request) + "\n").encode())
+                self.proc.stdin.flush()
+                msg = self._pump(lf.write)
+        if msg is None:
+            raise StepFailed(f"{self.name} worker exited mid-job")
+        if not msg.get("ok"):
+            raise StepFailed(f"{self.name}: {msg.get('error', 'failed')}")
+        return msg
 
 
 class Job:
@@ -112,13 +183,47 @@ class Pipeline:
         if "HF_HOME" not in self.env and hf.is_dir():
             self.env["HF_HOME"] = str(hf)
 
+        # Resident model workers: AnySplat and SAM 2 load their weights once at
+        # startup and then serve every job, instead of a fresh `conda run`
+        # (model reload) per job. Both fit in VRAM at once on this box.
+        self.anysplat = self.sam2 = None
+        if not getattr(args, "no_workers", False):
+            self.anysplat = Worker("AnySplat", [
+                self.conda, "run", "-n", args.anysplat_env, "--no-capture-output",
+                "python", "-u", str(HERE / "run_anysplat.py"), "--serve",
+                "--anysplat-root", str(args.anysplat_root)], self.env)
+            self.sam2 = Worker("SAM 2", [
+                self.conda, "run", "-n", args.sam2_env, "--no-capture-output",
+                "python", "-u", str(HERE / "make_masks_sam2.py"), "--serve",
+                "--checkpoint", str(args.sam2_checkpoint)], self.env)
+            log("resident workers launched; models are loading in the background")
+
+    def gpu_step(self, job, label, worker, request):
+        """Run one job on a resident worker, teeing its log into the job's
+        log.txt and recording the stage time, like step() does for `conda run`."""
+        logfile = job.dir / "log.txt"
+        with open(logfile, "a") as f:
+            f.write(f"\n=== {label} (resident worker): {json.dumps(request)}\n")
+            f.flush()
+        t0 = time.perf_counter()
+        msg = worker.run(logfile, request)
+        dt = time.perf_counter() - t0
+        with open(logfile, "a") as f:
+            f.write(f"\n=== {label}: done in {dt:.1f}s (resident worker)\n")
+        log(f"{job.id}: {label} took {dt:.1f}s (resident)")
+        return logfile, msg
+
     def step(self, job, env, label, *script_args):
         cmd = [self.conda, "run", "-n", env, "--no-capture-output", "python", *map(str, script_args)]
         logfile = job.dir / "log.txt"
         with open(logfile, "a") as f:
             f.write(f"\n=== {label}: {' '.join(cmd)}\n")
             f.flush()
+            t0 = time.perf_counter()
             rc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, env=self.env).returncode
+            dt = time.perf_counter() - t0
+            f.write(f"=== {label}: done in {dt:.1f}s (exit {rc})\n")
+        log(f"{job.id}: {label} took {dt:.1f}s (exit {rc})")
         if rc != 0:
             tail = logfile.read_text(errors="replace").strip().splitlines()[-3:]
             raise StepFailed(f"{label} failed (exit {rc}): " + " | ".join(tail))
@@ -135,9 +240,13 @@ class Pipeline:
                            message="pick the object in the headset (reconstruction is running)")
                 job.update(inference="running")
                 with GPU:
-                    self.step(job, a.anysplat_env, "AnySplat", HERE / "run_anysplat.py",
-                              "--frames", d / "frames", "--out", d / "raw",
-                              "--anysplat-root", a.anysplat_root)
+                    if self.anysplat:
+                        self.gpu_step(job, "AnySplat", self.anysplat,
+                                      {"frames": str(d / "frames"), "out": str(d / "raw")})
+                    else:
+                        self.step(job, a.anysplat_env, "AnySplat", HERE / "run_anysplat.py",
+                                  "--frames", d / "frames", "--out", d / "raw",
+                                  "--anysplat-root", a.anysplat_root)
                 job.update(inference="done")
 
             while True:   # one pass per prompt; a finished job can be re-prompted
@@ -162,9 +271,17 @@ class Pipeline:
         masks = d / "masks"
         shutil.rmtree(masks, ignore_errors=True)
         with GPU:
-            self.step(job, a.sam2_env, "SAM 2", HERE / "make_masks_sam2.py",
-                      "--frames", d / "frames", "--out", masks,
-                      "--checkpoint", a.sam2_checkpoint, *sam_prompt)
+            if self.sam2:
+                req = {"frames": str(d / "frames"), "out": str(masks)}
+                if "box" in prompt:
+                    req["box"] = prompt["box"]
+                else:
+                    req["points"] = ";".join(f"{x},{y}" for x, y in prompt["points"])
+                self.gpu_step(job, "SAM 2", self.sam2, req)
+            else:
+                self.step(job, a.sam2_env, "SAM 2", HERE / "make_masks_sam2.py",
+                          "--frames", d / "frames", "--out", masks,
+                          "--checkpoint", a.sam2_checkpoint, *sam_prompt)
 
         with job.cond:
             job.cond.wait_for(lambda: job.inference in ("done", "failed"))
@@ -420,6 +537,9 @@ def main():
     ap.add_argument("--jobs", default="jobs", help="where uploads and results go")
     ap.add_argument("--frames", type=int, default=64)
     ap.add_argument("--scale", type=float, default=1.0)
+    ap.add_argument("--no-workers", action="store_true",
+                    help="disable resident model workers; spawn a fresh conda "
+                         "run per stage (reloads the models each job)")
     ap.add_argument("--anysplat-root", default=str(HERE.parent.parent / "AnySplat"))
     ap.add_argument("--anysplat-env", default=os.environ.get("ANYSPLAT_ENV", "anysplat"))
     ap.add_argument("--sam2-env", default=os.environ.get("SAM2_ENV", "sam2"))

@@ -22,10 +22,14 @@ import argparse
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import worker_proto
 
 
 def log(msg):
@@ -52,11 +56,88 @@ def as_jpeg_dir(frames):
     return tmp, paths, tmp
 
 
+class Predictor:
+    """SAM 2 video predictor built once; masks() runs one job against it."""
+
+    def __init__(self, checkpoint, model_cfg):
+        try:
+            import torch
+            from sam2.build_sam import build_sam2_video_predictor
+        except ImportError as e:
+            raise SystemExit(f"SAM 2 not importable ({e}). Run this with the sam2 "
+                             f"env's python (see scripts/install.sh).")
+        self.torch = torch
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        log(f"building predictor on {self.device}")
+        t_build = time.perf_counter()
+        self.predictor = build_sam2_video_predictor(model_cfg, checkpoint,
+                                                    device=self.device)
+        log(f"timing: predictor build took {time.perf_counter() - t_build:.1f}s")
+
+    def masks(self, frames, out, box=None, points=None, prompt_frame=0):
+        if not box and not points:
+            raise SystemExit("give box or points to say what the subject is")
+
+        frames_dir, orig_paths, tmp = as_jpeg_dir(frames)
+        outdir = Path(out)
+        outdir.mkdir(parents=True, exist_ok=True)
+        state = None
+        try:
+            state = self.predictor.init_state(video_path=frames_dir)
+
+            kwargs = {}
+            if box:
+                kwargs["box"] = np.array(box, np.float32)
+                log(f"prompting frame {prompt_frame} with box {list(box)}")
+            if points:
+                pts = np.array([[float(x) for x in pair.split(",")]
+                                for pair in points.split(";")], np.float32)
+                kwargs["points"] = pts
+                kwargs["labels"] = np.ones(len(pts), np.int32)   # all foreground
+                log(f"prompting frame {prompt_frame} with {len(pts)} point(s)")
+
+            self.predictor.add_new_points_or_box(
+                state, frame_idx=prompt_frame, obj_id=1, **kwargs)
+
+            written = 0
+            for frame_idx, _obj_ids, mask_logits in self.predictor.propagate_in_video(state):
+                m = (mask_logits[0] > 0.0).cpu().numpy()
+                if m.ndim == 3:
+                    m = m[0]
+                # Name masks after the ORIGINAL frames: mask_splats.py matches
+                # masks to poses by sorted order, so the two must sort alike.
+                stem = orig_paths[frame_idx].stem
+                Image.fromarray((m * 255).astype(np.uint8)).save(outdir / f"{stem}.png")
+                written += 1
+
+            log(f"wrote {written} masks -> {outdir}")
+            if written != len(orig_paths):
+                log(f"WARNING: {len(orig_paths)} frames but {written} masks. "
+                    f"mask_splats.py matches by sorted order and will warn too.")
+            log("check a few masks by eye before running mask_splats.py -- a lost "
+                "track mid-sequence is the usual failure, and it shows up as a "
+                "subject with chunks missing")
+            return {"masks": written}
+        finally:
+            # Drop the per-video state (frame embeddings) so VRAM stays flat
+            # across jobs on the resident predictor.
+            if state is not None:
+                try:
+                    self.predictor.reset_state(state)
+                except Exception:
+                    pass
+            del state
+            if self.device == "cuda":
+                self.torch.cuda.empty_cache()
+            if tmp:
+                shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--frames", required=True)
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--frames")
+    ap.add_argument("--out")
     ap.add_argument("--checkpoint", required=True, help="SAM 2 .pt checkpoint")
     ap.add_argument("--model-cfg", default="configs/sam2.1/sam2.1_hiera_l.yaml")
     ap.add_argument("--box", nargs=4, type=float, metavar=("X0", "Y0", "X1", "Y1"),
@@ -64,65 +145,24 @@ def main():
     ap.add_argument("--points", type=str,
                     help="'x,y;x,y' foreground points in frame 0")
     ap.add_argument("--prompt-frame", type=int, default=0)
+    ap.add_argument("--serve", action="store_true",
+                    help="resident worker: build once, then one job per stdin "
+                         "line (see worker_proto.py)")
     args = ap.parse_args()
 
-    if not args.box and not args.points:
-        ap.error("give --box or --points to say what the subject is")
+    predictor = Predictor(args.checkpoint, args.model_cfg)
 
-    try:
-        import torch
-        from sam2.build_sam import build_sam2_video_predictor
-    except ImportError as e:
-        sys.exit(f"SAM 2 not importable ({e}). Run this with the sam2 env's "
-                 f"python (see scripts/install.sh).")
+    if args.serve:
+        worker_proto.serve_loop(lambda req: predictor.masks(
+            req["frames"], req["out"],
+            box=req.get("box"), points=req.get("points"),
+            prompt_frame=req.get("prompt_frame", 0)))
+        return
 
-    frames_dir, orig_paths, tmp = as_jpeg_dir(args.frames)
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    log(f"building predictor on {device}")
-    predictor = build_sam2_video_predictor(args.model_cfg, args.checkpoint,
-                                           device=device)
-
-    try:
-        state = predictor.init_state(video_path=frames_dir)
-
-        kwargs = {}
-        if args.box:
-            kwargs["box"] = np.array(args.box, np.float32)
-            log(f"prompting frame {args.prompt_frame} with box {args.box}")
-        if args.points:
-            pts = np.array([[float(x) for x in pair.split(",")]
-                            for pair in args.points.split(";")], np.float32)
-            kwargs["points"] = pts
-            kwargs["labels"] = np.ones(len(pts), np.int32)   # all foreground
-            log(f"prompting frame {args.prompt_frame} with {len(pts)} point(s)")
-
-        predictor.add_new_points_or_box(
-            state, frame_idx=args.prompt_frame, obj_id=1, **kwargs)
-
-        written = 0
-        for frame_idx, _obj_ids, mask_logits in predictor.propagate_in_video(state):
-            m = (mask_logits[0] > 0.0).cpu().numpy()
-            if m.ndim == 3:
-                m = m[0]
-            # Name masks after the ORIGINAL frames: mask_splats.py matches masks
-            # to poses by sorted order, so the two sets must sort identically.
-            stem = orig_paths[frame_idx].stem
-            Image.fromarray((m * 255).astype(np.uint8)).save(out / f"{stem}.png")
-            written += 1
-
-        log(f"wrote {written} masks -> {out}")
-        if written != len(orig_paths):
-            log(f"WARNING: {len(orig_paths)} frames but {written} masks. "
-                f"mask_splats.py matches by sorted order and will warn too.")
-        log("check a few masks by eye before running mask_splats.py -- a lost "
-            "track mid-sequence is the usual failure, and it shows up as a "
-            "subject with chunks missing")
-    finally:
-        if tmp:
-            shutil.rmtree(tmp, ignore_errors=True)
+    if not args.frames or not args.out:
+        ap.error("--frames and --out are required unless --serve")
+    predictor.masks(args.frames, args.out, box=args.box, points=args.points,
+                    prompt_frame=args.prompt_frame)
 
 
 if __name__ == "__main__":

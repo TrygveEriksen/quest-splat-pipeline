@@ -16,7 +16,11 @@ Usage:
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import worker_proto
 
 
 def log(msg):
@@ -66,11 +70,113 @@ def load_preprocessor(root):
     return fallback, False
 
 
+class Model:
+    """AnySplat loaded once; reconstruct() runs one job against it."""
+
+    def __init__(self, root, checkpoint=None):
+        if not (root / "src").is_dir():
+            raise SystemExit(f"{root} does not look like the AnySplat repo (no src/)")
+        sys.path.insert(0, str(root))
+        import torch
+        from src.model.model.anysplat import AnySplat
+        from src.model.ply_export import export_ply
+        self.torch, self.export_ply = torch, export_ply
+
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        if self.device == "cpu":
+            log("WARNING: no CUDA device visible -- this will be unusably slow")
+
+        names = [checkpoint] if checkpoint else ["lhjiang/anysplat", "anysplat_ckpt_v1"]
+        model = None
+        t_load = time.perf_counter()
+        for name in names:
+            try:
+                log(f"loading weights: {name}")
+                model = AnySplat.from_pretrained(name)
+                break
+            except Exception as e:
+                log(f"  failed ({type(e).__name__}: {e})")
+        if model is None:
+            raise SystemExit(f"could not load weights from any of {names}")
+        self.model = model.to(self.device).eval()
+        for p in self.model.parameters():
+            p.requires_grad = False
+        log(f"timing: model load + to(device) took {time.perf_counter() - t_load:.1f}s")
+        self.process_image, self.native = load_preprocessor(root)
+
+    def reconstruct(self, frames, out, max_frames=None, keep_sh=False):
+        torch = self.torch
+        outdir = Path(out)
+        outdir.mkdir(parents=True, exist_ok=True)
+
+        exts = {".png", ".jpg", ".jpeg"}
+        paths = sorted(p for p in Path(frames).iterdir() if p.suffix.lower() in exts)
+        if not paths:
+            raise SystemExit(f"no images in {frames}")
+        if max_frames:
+            paths = paths[:max_frames]
+        log(f"{len(paths)} input frames")
+
+        images = torch.stack([self.process_image(str(p)) for p in paths], 0)
+        images = images.unsqueeze(0).to(self.device)     # [1, K, 3, 448, 448]
+        log(f"input tensor {tuple(images.shape)}")
+
+        try:
+            with torch.no_grad():
+                t_fwd = time.perf_counter()
+                # The repo calls inference((images+1)*0.5), i.e. it expects [0,1].
+                gaussians, pred_pose = self.model.inference((images + 1) * 0.5)
+                if self.device == "cuda":
+                    torch.cuda.synchronize()
+                log(f"timing: forward pass (model.inference) took {time.perf_counter() - t_fwd:.1f}s")
+        except torch.cuda.OutOfMemoryError:
+            raise SystemExit(f"CUDA OOM with {len(paths)} frames. Re-run with "
+                             f"--max-frames {max(2, len(paths)//2)}, or re-extract fewer frames.")
+
+        n = gaussians.means[0].shape[0]
+        log(f"produced {n:,} Gaussians")
+        if n > 1_000_000:
+            log(f"note: {n:,} is far above a Quest 2 budget (~150-250k). "
+                f"decimate_ply.py handles that in stage E.")
+
+        ply_path = outdir / "gaussians.ply"
+        t_write = time.perf_counter()
+        self.export_ply(
+            gaussians.means[0], gaussians.scales[0], gaussians.rotations[0],
+            gaussians.harmonics[0], gaussians.opacities[0], ply_path,
+            save_sh_dc_only=not keep_sh,
+        )
+        log(f"wrote {ply_path}")
+        log(f"timing: PLY write took {time.perf_counter() - t_write:.1f}s")
+
+        # Keep the poses: stage D cannot run without them, and re-running
+        # inference just to recover them costs another full forward pass.
+        import numpy as np
+        pose_npz = outdir / "poses.npz"
+        payload = {}
+        for key in ("extrinsic", "intrinsic"):
+            if key in pred_pose:
+                payload[key] = pred_pose[key].detach().cpu().numpy()
+                log(f"pose '{key}': shape {payload[key].shape}")
+        np.savez(pose_npz, **payload)
+        (outdir / "frames.json").write_text(json.dumps([p.name for p in paths], indent=2))
+        log(f"wrote {pose_npz} and frames.json ({len(paths)} frame names, in input order)")
+        log(f"preprocessing used: {'AnySplat native' if self.native else 'FALLBACK (verify!)'}")
+        log("next: inspect gaussians.ply in https://playcanvas.com/supersplat/editor "
+            "before running stage C")
+
+        # Free the per-job transients so the resident model keeps VRAM flat.
+        del gaussians, pred_pose, images
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+        return {"splats": int(n)}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--frames", required=True, help="directory of input frames")
-    ap.add_argument("--out", required=True, help="output directory")
+    ap.add_argument("--frames", help="directory of input frames")
+    ap.add_argument("--out", help="output directory")
     ap.add_argument("--anysplat-root", required=True,
                     help="clone of github.com/InternRobotics/AnySplat")
     ap.add_argument("--checkpoint", default=None,
@@ -80,90 +186,24 @@ def main():
     ap.add_argument("--keep-sh", action="store_true",
                     help="write all SH bands (much larger). Default is DC-only, "
                          "which is what the Quest build wants anyway")
+    ap.add_argument("--serve", action="store_true",
+                    help="resident worker: load once, then one job per stdin line "
+                         "(see worker_proto.py)")
     args = ap.parse_args()
 
     root = Path(args.anysplat_root).expanduser().resolve()
-    if not (root / "src").is_dir():
-        ap.error(f"{root} does not look like the AnySplat repo (no src/)")
-    sys.path.insert(0, str(root))
+    model = Model(root, args.checkpoint)
 
-    import torch
-    from src.model.model.anysplat import AnySplat
-    from src.model.ply_export import export_ply
+    if args.serve:
+        worker_proto.serve_loop(lambda req: model.reconstruct(
+            req["frames"], req["out"],
+            req.get("max_frames", args.max_frames),
+            req.get("keep_sh", args.keep_sh)))
+        return
 
-    outdir = Path(args.out)
-    outdir.mkdir(parents=True, exist_ok=True)
-
-    exts = {".png", ".jpg", ".jpeg"}
-    paths = sorted(p for p in Path(args.frames).iterdir() if p.suffix.lower() in exts)
-    if not paths:
-        ap.error(f"no images in {args.frames}")
-    if args.max_frames:
-        paths = paths[:args.max_frames]
-    log(f"{len(paths)} input frames")
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    if device == "cpu":
-        log("WARNING: no CUDA device visible -- this will be unusably slow")
-
-    names = [args.checkpoint] if args.checkpoint else ["lhjiang/anysplat", "anysplat_ckpt_v1"]
-    model = None
-    for name in names:
-        try:
-            log(f"loading weights: {name}")
-            model = AnySplat.from_pretrained(name)
-            break
-        except Exception as e:
-            log(f"  failed ({type(e).__name__}: {e})")
-    if model is None:
-        sys.exit(f"could not load weights from any of {names}")
-
-    model = model.to(device).eval()
-    for p in model.parameters():
-        p.requires_grad = False
-
-    process_image, native = load_preprocessor(root)
-    images = torch.stack([process_image(str(p)) for p in paths], 0)
-    images = images.unsqueeze(0).to(device)          # [1, K, 3, 448, 448]
-    log(f"input tensor {tuple(images.shape)}")
-
-    try:
-        with torch.no_grad():
-            # The repo calls inference((images+1)*0.5), i.e. it expects [0,1].
-            gaussians, pred_pose = model.inference((images + 1) * 0.5)
-    except torch.cuda.OutOfMemoryError:
-        sys.exit(f"CUDA OOM with {len(paths)} frames. Re-run with "
-                 f"--max-frames {max(2, len(paths)//2)}, or re-extract fewer frames.")
-
-    n = gaussians.means[0].shape[0]
-    log(f"produced {n:,} Gaussians")
-    if n > 1_000_000:
-        log(f"note: {n:,} is far above a Quest 2 budget (~150-250k). "
-            f"decimate_ply.py handles that in stage E.")
-
-    ply_path = outdir / "gaussians.ply"
-    export_ply(
-        gaussians.means[0], gaussians.scales[0], gaussians.rotations[0],
-        gaussians.harmonics[0], gaussians.opacities[0], ply_path,
-        save_sh_dc_only=not args.keep_sh,
-    )
-    log(f"wrote {ply_path}")
-
-    # Keep the poses: stage D cannot run without them, and re-running inference
-    # just to recover them costs another full forward pass.
-    import numpy as np
-    pose_npz = outdir / "poses.npz"
-    payload = {}
-    for key in ("extrinsic", "intrinsic"):
-        if key in pred_pose:
-            payload[key] = pred_pose[key].detach().cpu().numpy()
-            log(f"pose '{key}': shape {payload[key].shape}")
-    np.savez(pose_npz, **payload)
-    (outdir / "frames.json").write_text(json.dumps([p.name for p in paths], indent=2))
-    log(f"wrote {pose_npz} and frames.json ({len(paths)} frame names, in input order)")
-    log(f"preprocessing used: {'AnySplat native' if native else 'FALLBACK (verify!)'}")
-    log("next: inspect gaussians.ply in https://playcanvas.com/supersplat/editor "
-        "before running stage C")
+    if not args.frames or not args.out:
+        ap.error("--frames and --out are required unless --serve")
+    model.reconstruct(args.frames, args.out, args.max_frames, args.keep_sh)
 
 
 if __name__ == "__main__":
