@@ -43,7 +43,6 @@ unity/QuestSplatViewer/Assets/Scripts/
   PerfHud.cs            mean + p95 frame time vs the 72 Hz budget
 docs/
   pipeline_diagram.html one-page diagram of the whole pipeline
-  CAPTURE.md            how to shoot, and the budget table to fill in
   UNITY_SETUP.md        exact Unity/XR/URP settings for Quest 2
 ```
 

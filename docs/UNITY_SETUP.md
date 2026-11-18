@@ -132,7 +132,6 @@ plus `requestLegacyExternalStorage` to the manifest — it buys nothing here.
    enormous splats covering the viewport. If it tanks, lower
    `decimate_ply.py --max-extent-frac` before lowering `--target`.
 4. Sweep `--target` upward (150k → 200k → 250k) until p95 exceeds 13.9 ms.
-5. Record the real number in `CAPTURE.md`.
 
 ## Decision gate
 
