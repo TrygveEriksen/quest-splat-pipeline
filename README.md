@@ -10,6 +10,9 @@ phone, upload the video to the PC, pick the object in the headset, and about
 half a minute later it is standing on a real table in passthrough. This has
 been run end to end on a Quest 2 with the server on an RTX 5090.
 
+**[Demo video](https://drive.google.com/file/d/1kODycygut173ryctb3xSA12vbmzaNGiM/view?usp=sharing)**
+of a capture going from phone to headset.
+
 See [docs/pipeline_diagram.html](docs/pipeline_diagram.html) for the stages at
 a glance.
 
