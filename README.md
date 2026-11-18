@@ -13,7 +13,7 @@ been run end to end on a Quest 2 with the server on an RTX 5090.
 **[Demo video](https://drive.google.com/file/d/1kODycygut173ryctb3xSA12vbmzaNGiM/view?usp=sharing)**
 of a capture going from phone to headset.
 
-See [docs/pipeline_diagram.html](docs/pipeline_diagram.html) for the stages at
+See [docs/dataflow.png](docs/dataflow.png) for the stages at
 a glance.
 
 ## Layout
@@ -44,7 +44,7 @@ unity/QuestSplatViewer/Assets/Scripts/
   SplatPlacementRig.cs  in-headset scale/placement, to validate metric scale
   PerfHud.cs            mean + p95 frame time vs the 72 Hz budget
 docs/
-  pipeline_diagram.html one-page diagram of the whole pipeline
+  dataflow.png          one-page diagram of the whole pipeline
   UNITY_SETUP.md        exact Unity/XR/URP settings for Quest 2
 ```
 
