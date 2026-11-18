@@ -5,6 +5,14 @@ A pipeline that takes a handheld video, runs a **feed-forward** model
 and produces a 3D Gaussian Splat scene that renders on a **standalone Quest 2**
 in Unity.
 
+The normal way to use it is as a **capture server**: film an object with a
+phone, upload the video to the PC, pick the object in the headset, and about
+half a minute later it is standing on a real table in passthrough. This has
+been run end to end on a Quest 2 with the server on an RTX 5090.
+
+See [docs/pipeline_diagram.html](docs/pipeline_diagram.html) for the stages at
+a glance.
+
 ## Layout
 
 ```
@@ -20,9 +28,9 @@ scripts/
   poses_to_colmap.py    D: COLMAP export for the refinement pass
   decimate_ply.py       E: prune + subsample to a budget (manual only, not in pipeline.sh)
   level_ply.py          B3: stand the subject upright on its surface, origin at its base
-  pipeline.sh           A -> C end to end, conda envs handled itself
+  pipeline.sh           offline alternative: A -> C end to end on one video, conda envs handled itself
   install.sh            clones AnySplat + SAM 2, fetches weights, creates both envs
-  splat_server.py       phone upload -> pick in the headset -> gaussians back (LAN)
+  splat_server.py       the main entry point: phone upload -> pick in the headset -> gaussians back (LAN)
   splat_server_upload.html  the phone's upload page
   worker_proto.py       stdio line protocol for the resident model workers
   deploy_quest.sh       install the APK + push a splat over USB
@@ -42,7 +50,7 @@ docs/
   UNITY_SETUP.md        exact Unity/XR/URP settings for Quest 2
 ```
 
-## Quick start
+## Install
 
 On the **NVIDIA box** (Linux or WSL2 — AnySplat pins a Linux-only gsplat
 wheel), install everything with:
@@ -60,28 +68,6 @@ pinned wheels can't use, hence the separate env. Deviations from AnySplat's own
 `torch_scatter` comes as a prebuilt PyG wheel, and OpenCV is the `-headless`
 build (no libGL).
 
-Then, from any shell -- each step runs in its env via `conda run`, and the
-pipeline finds `../AnySplat` and `../hf_cache` on its own:
-
-```bash
-./scripts/pipeline.sh capture.mp4                # 64 frames -> work/quest.ply
-./scripts/pipeline.sh capture.mp4 work/ ../AnySplat 32   # workdir, AnySplat root, frames
-```
-
-There is no decimation stage: masking cuts the scene down to the subject
-(~200k splats for a shoe at 64 frames). With `MASK=0` the output is millions of
-splats; run `decimate_ply.py` on it by hand before deploying.
-
-Subject masking is on by default: after frame extraction a window opens on
-frame 0 (`pick_box.py`) -- drag a box around the subject and press Enter. SAM 2
-(run through `conda run -n $SAM2_ENV`) then tracks it through every frame.
-
-```bash
-BOX="120 90 330 400" ./scripts/pipeline.sh capture.mp4   # no picker window
-MASK=0 ./scripts/pipeline.sh capture.mp4                 # whole scene
-MASKS=my_masks/ ./scripts/pipeline.sh capture.mp4        # precomputed masks
-```
-
 The envs default to `ANYSPLAT_ENV=anysplat` and `SAM2_ENV=sam2`. RTX 50xx
 (Blackwell) cards need cu128 builds (torch 2.8, plus matching `torch_scatter`
 and `xformers` for AnySplat), which `install.sh` does not install yet: on this
@@ -89,20 +75,18 @@ box both envs were upgraded to them after install. SAM 2 prints a
 warning about skipping its post-processing CUDA extension; that is expected and
 harmless.
 
-Check `work/quest.ply` in [SuperSplat](https://playcanvas.com/supersplat/editor)
-— **not foggy** (opacity correct), **not mirrored** (handedness correct) — then:
+## Running: phone capture, pick in the headset
+
+Install the viewer on the headset once, over USB (developer mode on, USB
+debugging accepted in the headset). The APK is built from the Unity project,
+see [docs/UNITY_SETUP.md](docs/UNITY_SETUP.md):
 
 ```bash
-./scripts/deploy_quest.sh work/quest.ply    # install the APK, push, launch, show the log
+./scripts/deploy_quest.sh        # install the APK and launch it
 ```
 
-The APK comes from the Unity project (see [docs/UNITY_SETUP.md](docs/UNITY_SETUP.md));
-a new capture needs only `NO_INSTALL=1 ./scripts/deploy_quest.sh other.ply`.
-
-## Capture with a phone, pick in the headset
-
-`splat_server.py` runs the same stages as a service, so a capture never touches
-the PC's keyboard:
+Then start the server on the GPU box. It runs every stage itself, so a capture
+never touches the PC's keyboard:
 
 ```bash
 ./scripts/splat_server.py        # prints the phone upload URL, e.g. http://10.24.71.147:8765/
@@ -146,72 +130,36 @@ adb push server.txt /sdcard/Android/data/com.vrproj.questsplatviewer/files/
 The server has no authentication: anyone on the network can upload and spend
 GPU time, so run it only on a network you trust.
 
-## Masking to a subject (stage B2, on by default)
+## Offline: one video from the command line
 
-AnySplat has no mask input -- it is trained on RGB only -- but its Gaussians are
-**pixel-aligned**, one per input pixel per view. So a 2D segmentation becomes a
-3D selection by reprojection: push each Gaussian back into every input view,
-look up the mask, and keep the ones that land inside it.
+`pipeline.sh` runs the same stages on one video from the command line, with
+no phone or headset in the loop. Each step runs in its env via `conda run`,
+and the pipeline finds `../AnySplat` and `../hf_cache` on its own:
 
-This runs on the **raw** PLY, before `fixup_ply.py`, because the predicted poses
-are in the model's coordinate frame.
+```bash
+./scripts/pipeline.sh capture.mp4                # 64 frames -> work/quest.ply
+./scripts/pipeline.sh capture.mp4 work/ ../AnySplat 32   # workdir, AnySplat root, frames
+```
 
-The subtlety is depth ambiguity: a wall directly behind the subject genuinely is
-inside the mask from that viewpoint. Requiring agreement across the views that
-observe a Gaussian rejects it, and the threshold matters a lot — measured on a
-synthetic ground-truth scene (90k subject splats in a 500k room, 24 cameras
-orbiting with the far wall in frame):
+There is no decimation stage: masking cuts the scene down to the subject
+(~200k splats for a shoe at 64 frames). With `MASK=0` the output is millions of
+splats; run `decimate_ply.py` on it by hand before deploying.
 
-| `--min-agreement` | precision | recall |
-|---|---|---|
-| 0.50 (majority) | 32.8% | 100% |
-| **0.80 (default)** | **99.9%** | **100%** |
-| 0.95 | 100% | 100% |
+Subject masking is on by default: after frame extraction a window opens on
+frame 0 (`pick_box.py`) -- drag a box around the subject and press Enter. SAM 2
+(run through `conda run -n $SAM2_ENV`) then tracks it through every frame.
 
-A plain majority vote is unusable. Add `--erode 3` to trim the silhouette halo
-(100% precision in the same test).
+```bash
+BOX="120 90 330 400" ./scripts/pipeline.sh capture.mp4   # no picker window
+MASK=0 ./scripts/pipeline.sh capture.mp4                 # whole scene
+MASKS=my_masks/ ./scripts/pipeline.sh capture.mp4        # precomputed masks
+```
 
-On Quest 2 this is the biggest quality lever available: masking first means the
-whole ~150k budget goes to the subject, rather than being spent on walls that
-decimation then discards.
+Check `work/quest.ply` in [SuperSplat](https://playcanvas.com/supersplat/editor)
+— **not foggy** (opacity correct), **not mirrored** (handedness correct) — then:
 
-## The three corrections that matter
+```bash
+./scripts/deploy_quest.sh work/quest.ply    # install the APK, push, launch, show the log
+```
 
-Stage C exists because AnySplat's PLY export is not directly loadable:
-
-1. **Opacity** is written raw, with no inverse-sigmoid, while INRIA-convention
-   loaders apply `sigmoid()` on read. Double-activation squashes all alpha into
-   ~0.5–0.73 → the scene renders as uniform milky fog. `fixup_ply.py` detects
-   the encoding from the column range and corrects it.
-2. **Axes**: AnySplat inherits VGGT's OpenCV-style frame (Y down, Z forward,
-   right-handed); Unity is left-handed, Y up. The flip has determinant −1, so it
-   *cannot* be applied as a Unity object transform without corrupting the
-   per-splat quaternions. `pipeline.sh` therefore keeps the file in that
-   standard 3DGS frame (`--axes none`, which SuperSplat also shows upright), and
-   the Unity app tells UnitySplats the source frame is `RDF`, so the package
-   converts positions, rotations and SH on load. Baking the flip into the file
-   as well (`fixup_ply.py`'s default, see `_apply_axes`) would get the
-   package's own conversion applied on top and come out mirrored.
-3. **Scale** is arbitrary. In VR a wrongly-scaled scene reads as a dollhouse or
-   a cathedral, so `--scale` is derived from one real measurement.
-
-## What's verified vs not
-
-**Verified** (synthetic ground-truth tests, run locally):
-- quaternion round-trip exact to 7e-16; mirrored covariances reproduced to
-  float32 precision with scales provably unchanged
-- opacity logit round-trip to 1.2e-08
-- decimation: 600k → 149,784 against a 150k target, floaters culled
-- pose-convention auto-detection: correct on both an object orbit and a room
-  scan, with 5.3× and 7.6× margins
-- subject masking: F1 99.9% against ground-truth labels at the default
-  `--min-agreement 0.8`; 100% with `--erode 3`
-
-**Verified on the RTX 5090 box** (Unity 6000.6.8f1, UnitySplats pinned):
-- the full pipeline, AnySplat and SAM 2 included, on a real capture
-- the Unity project compiles, passes OpenXR project validation for Android
-  with no errors, and in Play mode renders a pipeline `quest.ply` through
-  `SplatSceneBrowser` upright and not mirrored
-
-**Not verified yet:**
-- the app on a headset (frame time, stereo under single-pass instanced)
+A new capture needs only `NO_INSTALL=1 ./scripts/deploy_quest.sh other.ply`.
