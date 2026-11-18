@@ -17,7 +17,7 @@ namespace QuestSplatViewer
     public static class SplatLoaderAdapter
     {
         /// <summary>
-        /// The frame pipeline.sh writes PLYs in: standard 3DGS / OpenCV, x right,
+        /// The frame splat_server.py writes PLYs in: standard 3DGS / OpenCV, x right,
         /// y down, z forward -- the same file previews upright in SuperSplat. The
         /// package converts it to Unity's x right, y up, z forward on load, for
         /// positions, rotations and SH alike, so no flip is baked into the file.

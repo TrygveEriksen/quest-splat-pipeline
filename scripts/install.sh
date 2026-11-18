@@ -74,7 +74,7 @@ cat <<MSG
   AnySplat env : $A/python
   SAM 2 env    : $S/python
   SAM 2 ckpt   : $CKPT
-  HF_HOME      : $HF_HOME  (pipeline.sh picks this up automatically)
+  HF_HOME      : $HF_HOME  (splat_server.py picks this up automatically)
 
 Check the GPU is visible:
   $A/python -c "import torch; print(torch.cuda.is_available())"

@@ -14,7 +14,7 @@ subject is being picked in the headset. A job can be re-prompted after it
 finishes; only SAM 2, masking and fixup re-run.
 
 Stdlib only, so it runs on the system python; every stage runs in its own conda
-env (ANYSPLAT_ENV, SAM2_ENV), as in pipeline.sh.
+env (ANYSPLAT_ENV, SAM2_ENV).
 
 LAN use only: there is no authentication, and anyone who can reach the port can
 upload video and spend GPU time.
@@ -305,7 +305,7 @@ class Pipeline:
             fixup_in, recenter = d / "masked.ply", ["--recenter"]
 
         job.update(message="fixing opacity and scale")
-        # --axes none: the Quest app tells UnitySplats the file is RDF (see pipeline.sh).
+        # --axes none: the Quest app tells UnitySplats the file is RDF (see SplatLoaderAdapter.cs).
         logfile = self.step(job, a.anysplat_env, "fixup", HERE / "fixup_ply.py",
                             fixup_in, "-o", job.result,
                             "--axes", "none", "--scale", a.scale, *recenter)

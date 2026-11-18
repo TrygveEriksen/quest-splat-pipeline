@@ -5,7 +5,7 @@ A pipeline that takes a handheld video, runs a **feed-forward** model
 and produces a 3D Gaussian Splat scene that renders on a **standalone Quest 2**
 in Unity.
 
-The normal way to use it is as a **capture server**: film an object with a
+It runs as a **capture server**: film an object with a
 phone, upload the video to the PC, pick the object in the headset, and about
 half a minute later it is standing on a real table in passthrough. This has
 been run end to end on a Quest 2 with the server on an RTX 5090.
@@ -21,19 +21,16 @@ scripts/
   pose_utils.py         shared pose loading, projection, convention detection
   extract_frames.py     A: video -> sharp, evenly-spread frames
   run_anysplat.py       B: inference CLI (+ dumps the camera poses)
-  pick_box.py           A2: drag a box around the subject on frame 0
   make_masks_sam2.py    A3: per-frame subject masks via SAM 2
   mask_splats.py        B2: keep only Gaussians inside the masks
   fixup_ply.py          C: opacity / axes / metric scale corrections
-  poses_to_colmap.py    D: COLMAP export for the refinement pass
-  decimate_ply.py       E: prune + subsample to a budget (manual only, not in pipeline.sh)
+  decimate_ply.py       E: prune + subsample to a budget (manual tuning tool, not run by the server)
   level_ply.py          B3: stand the subject upright on its surface, origin at its base
-  pipeline.sh           offline alternative: A -> C end to end on one video, conda envs handled itself
   install.sh            clones AnySplat + SAM 2, fetches weights, creates both envs
-  splat_server.py       the main entry point: phone upload -> pick in the headset -> gaussians back (LAN)
+  splat_server.py       the entry point: phone upload -> pick in the headset -> gaussians back (LAN)
   splat_server_upload.html  the phone's upload page
   worker_proto.py       stdio line protocol for the resident model workers
-  deploy_quest.sh       install the APK + push a splat over USB
+  deploy_quest.sh       install the APK on the headset over USB
 unity/QuestSplatViewer/Assets/Editor/
   QuestProjectSetup.cs  applies docs/UNITY_SETUP.md + builds the scene and APK
 unity/QuestSplatViewer/Assets/Scripts/
@@ -130,36 +127,3 @@ adb push server.txt /sdcard/Android/data/com.vrproj.questsplatviewer/files/
 The server has no authentication: anyone on the network can upload and spend
 GPU time, so run it only on a network you trust.
 
-## Offline: one video from the command line
-
-`pipeline.sh` runs the same stages on one video from the command line, with
-no phone or headset in the loop. Each step runs in its env via `conda run`,
-and the pipeline finds `../AnySplat` and `../hf_cache` on its own:
-
-```bash
-./scripts/pipeline.sh capture.mp4                # 64 frames -> work/quest.ply
-./scripts/pipeline.sh capture.mp4 work/ ../AnySplat 32   # workdir, AnySplat root, frames
-```
-
-There is no decimation stage: masking cuts the scene down to the subject
-(~200k splats for a shoe at 64 frames). With `MASK=0` the output is millions of
-splats; run `decimate_ply.py` on it by hand before deploying.
-
-Subject masking is on by default: after frame extraction a window opens on
-frame 0 (`pick_box.py`) -- drag a box around the subject and press Enter. SAM 2
-(run through `conda run -n $SAM2_ENV`) then tracks it through every frame.
-
-```bash
-BOX="120 90 330 400" ./scripts/pipeline.sh capture.mp4   # no picker window
-MASK=0 ./scripts/pipeline.sh capture.mp4                 # whole scene
-MASKS=my_masks/ ./scripts/pipeline.sh capture.mp4        # precomputed masks
-```
-
-Check `work/quest.ply` in [SuperSplat](https://playcanvas.com/supersplat/editor)
-— **not foggy** (opacity correct), **not mirrored** (handedness correct) — then:
-
-```bash
-./scripts/deploy_quest.sh work/quest.ply    # install the APK, push, launch, show the log
-```
-
-A new capture needs only `NO_INSTALL=1 ./scripts/deploy_quest.sh other.ply`.

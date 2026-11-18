@@ -1,7 +1,7 @@
 """Shared handling of AnySplat's predicted camera poses.
 
-Used by poses_to_colmap.py (stage D) and mask_splats.py (stage B2). Both need
-the same two undocumented things resolved before they can project anything:
+Used by mask_splats.py (stage B2) and level_ply.py (stage B3). They need the
+same two undocumented things resolved before they can project anything:
 whether the extrinsics are world-to-camera or camera-to-world, and whether the
 intrinsics are in pixels or normalised. Keeping that in one place means a fix
 benefits both.
