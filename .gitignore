@@ -14,3 +14,12 @@ __pycache__/
 *.pyc
 
 # The Unity project has its own .gitignore in unity/QuestSplatViewer/
+
+# Local inputs and caches that end up in the repo dir
+*.mkv
+/hub/
+/xet/
+.agent_harnesses.json
+
+# Unity crash dumps
+mono_crash*

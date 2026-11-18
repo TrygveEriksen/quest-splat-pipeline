@@ -21,7 +21,10 @@ scripts/
   decimate_ply.py       E: prune + subsample to a budget (manual only, not in pipeline.sh)
   level_ply.py          B3: stand the subject upright on its surface, origin at its base
   pipeline.sh           A -> C end to end, conda envs handled itself
+  install.sh            clones AnySplat + SAM 2, fetches weights, creates both envs
   splat_server.py       phone upload -> pick in the headset -> gaussians back (LAN)
+  splat_server_upload.html  the phone's upload page
+  worker_proto.py       stdio line protocol for the resident model workers
   deploy_quest.sh       install the APK + push a splat over USB
 unity/QuestSplatViewer/Assets/Editor/
   QuestProjectSetup.cs  applies docs/UNITY_SETUP.md + builds the scene and APK
@@ -29,9 +32,12 @@ unity/QuestSplatViewer/Assets/Scripts/
   SplatLoaderAdapter.cs the only file touching the UnitySplats package API
   SplatSceneBrowser.cs  runtime splat loading (adb push, no APK rebuild)
   CaptureClient.cs      the headset side of splat_server.py
+  SceneSurfaces.cs      Space Setup tables/floor as AR planes to set splats on
+  SplatGrab.cs          right grip picks the splat up, release drops it on a surface
   SplatPlacementRig.cs  in-headset scale/placement, to validate metric scale
   PerfHud.cs            mean + p95 frame time vs the 72 Hz budget
 docs/
+  pipeline_diagram.html one-page diagram of the whole pipeline
   CAPTURE.md            how to shoot, and the budget table to fill in
   UNITY_SETUP.md        exact Unity/XR/URP settings for Quest 2
 ```
@@ -110,6 +116,13 @@ the PC's keyboard:
 3. About half a minute later the gaussians download and replace the scene.
    With nothing on the panel, **B** brings back the last capture to pick again
    (only SAM 2 onward re-runs).
+
+The server keeps AnySplat and SAM 2 loaded in two resident worker processes
+(`run_anysplat.py --serve`, `make_masks_sam2.py --serve`, protocol in
+`worker_proto.py`), so model loading is paid once at startup rather than per
+job: a warm 64-frame capture goes from ~60 s to ~44 s end to end on an RTX 5090.
+Both models fit in its 32 GB together; on a smaller card, `--no-workers` falls
+back to a fresh `conda run` per stage.
 
 The app runs in passthrough, so the capture appears in your room. Hold the
 **right grip** to pick it up and move it; let go above a real table and it

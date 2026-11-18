@@ -1,0 +1,159 @@
+<title>Quest Splat Pipeline</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one wide left-to-right flow figure (scrolls on its own on phones), short notes underneath. */
+:root {
+  --bg: #ffffff; --surface: #ffffff; --fg: #1b2129; --muted: #5d6673;
+  --line: #6b7380; --line-soft: #c9ced6; --file-bg: #e9edf2;
+  --accent: #2f5bd3;
+  --model-bg: #1b2129; --model-fg: #f1f3f6; --model-sub: #a9b1bd;
+  --sans: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+body { background: var(--bg); color: var(--fg); font: 15px/1.55 var(--sans); }
+.wrap { max-width: 1580px; margin: 0 auto; padding-inline: 20px; padding-block: 36px 56px; display: grid; gap: 28px; }
+header { display: grid; gap: 6px; max-width: 68ch; }
+h1 { font-size: 28px; line-height: 1.15; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+.lede { margin: 0; color: var(--muted); }
+code, .mono { font-family: var(--mono); font-size: 0.86em; }
+
+figure { margin: 0; background: var(--surface); }
+.scroll { overflow-x: auto; padding: 12px 8px 4px; }
+svg.flow { display: block; width: 100%; min-width: 900px; height: auto; }
+figcaption { padding: 10px 16px 14px; border-top: 1px solid var(--line-soft); color: var(--muted); font-size: 13.5px; }
+
+/* diagram marks */
+.ln { stroke: var(--line); stroke-width: 1.5; fill: none; }
+.ln.dash { stroke-dasharray: 5 4; }
+.ahp { fill: var(--line); }
+.dot { fill: var(--line); }
+.step rect { fill: var(--surface); stroke: var(--fg); stroke-width: 1.25; }
+.step.key rect { stroke: var(--accent); stroke-width: 2.25; }
+.step.key .tag { fill: var(--accent); }
+.file rect { fill: var(--file-bg); stroke: var(--line-soft); }
+.model rect { fill: var(--model-bg); }
+.model .t { fill: var(--model-fg); font-size: 17px; font-weight: 700; }
+.model .s { fill: var(--model-sub); }
+.model .tag { fill: var(--model-sub); }
+.t { font: 600 14px var(--sans); fill: var(--fg); }
+.s { font: 10.5px var(--mono); fill: var(--muted); }
+.tag { font: 600 9.5px var(--sans); letter-spacing: 0.12em; fill: var(--muted); }
+.lbl { font: 11px var(--mono); fill: var(--muted); }
+
+/* legend + notes */
+.legend { display: flex; flex-wrap: wrap; gap: 10px 26px; padding: 0 2px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.sw { width: 26px; height: 14px; border-radius: 2px; flex: none; }
+.sw.model { background: var(--model-bg); }
+.sw.step { border: 1.25px solid var(--fg); background: var(--surface); }
+.sw.key { border: 2.25px solid var(--accent); background: var(--surface); }
+.sw.file { background: var(--file-bg); border: 1px solid var(--line-soft); }
+.sw.dash { height: 0; border-top: 1.5px dashed var(--line); border-radius: 0; }
+
+.notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 22px 32px; }
+.notes section { min-width: 0; }
+.notes h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 6px; color: var(--muted); font-weight: 600; }
+.notes p { margin: 0; font-size: 14.5px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Quest Splat Pipeline</h1>
+  </header>
+
+  <figure>
+    <div class="scroll">
+      <svg class="flow" viewBox="0 55 1520 345" role="img"
+           aria-label="Left to right: phone video, extract_frames, frames. The frames go to AnySplat, which outputs gaussians.ply and poses.npz, and to SAM 2.1, which also takes a subject prompt and outputs masks. All three meet in mask_splats, then level_ply (which also reads the floor plane from the raw gaussians), fixup_ply, and quest.ply goes to the Quest 2, where the next subject prompt is picked.">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="ahp" d="M0,0 L10,5 L0,10 z"/>
+          </marker>
+        </defs>
+
+        <!-- main row, left to right -->
+        <path class="ln" d="M130,180 H163" marker-end="url(#ah)"/>
+        <path class="ln" d="M295,180 H328" marker-end="url(#ah)"/>
+        <!-- frames fan out to both models -->
+        <path class="ln" d="M450,180 H475 V110 H498" marker-end="url(#ah)"/>
+        <path class="ln" d="M475,180 V235 H498" marker-end="url(#ah)"/>
+        <circle class="dot" cx="475" cy="180" r="3"/>
+        <path class="ln" d="M450,320 H487 V265 H498" marker-end="url(#ah)"/>
+        <!-- model outputs -->
+        <path class="ln" d="M650,87 H688" marker-end="url(#ah)"/>
+        <path class="ln" d="M650,133 H688" marker-end="url(#ah)"/>
+        <path class="ln" d="M650,250 H688" marker-end="url(#ah)"/>
+        <!-- outputs meet in mask_splats -->
+        <path class="ln" d="M820,87 H925 V153" marker-end="url(#ah)"/>
+        <path class="ln" d="M820,133 H840 V180 H858" marker-end="url(#ah)"/>
+        <path class="ln" d="M820,250 H925 V207" marker-end="url(#ah)"/>
+        <circle class="dot" cx="925" cy="87" r="3"/>
+        <path class="ln dash" d="M925,87 H1090 V153" marker-end="url(#ah)"/>
+        <text class="lbl" x="1007" y="79" text-anchor="middle">floor plane</text>
+        <!-- post-processing -->
+        <path class="ln" d="M990,180 H1028" marker-end="url(#ah)"/>
+        <path class="ln" d="M1150,180 H1188" marker-end="url(#ah)"/>
+        <path class="ln" d="M1310,180 H1378" marker-end="url(#ah)"/>
+        <text class="lbl" x="1344" y="171" text-anchor="middle">quest.ply</text>
+        <!-- headset sends the next prompt back -->
+        <path class="ln dash" d="M1440,205 V380 H390 V347" marker-end="url(#ah)"/>
+        <text class="lbl" x="915" y="372" text-anchor="middle">frame 0 shown in headset · pick the object</text>
+
+        <g class="file">
+          <rect x="20" y="155" width="110" height="50" rx="10"/>
+          <text class="t" x="75" y="180" text-anchor="middle" dominant-baseline="central">Phone video</text>
+        </g>
+        <g class="step">
+          <rect x="165" y="155" width="130" height="50" rx="3"/>
+          <text class="t" x="230" y="180" text-anchor="middle" dominant-baseline="central">extract_frames</text>
+        </g>
+        <g class="file">
+          <rect x="330" y="155" width="120" height="50" rx="10"/>
+          <text class="t" x="390" y="180" text-anchor="middle" dominant-baseline="central">frames/</text>
+        </g>
+        <g class="file">
+          <rect x="330" y="295" width="120" height="50" rx="10"/>
+          <text class="t" x="390" y="320" text-anchor="middle" dominant-baseline="central">Subject prompt</text>
+        </g>
+        <g class="model">
+          <rect x="500" y="80" width="150" height="60" rx="3"/>
+          <text class="t" x="575" y="110" text-anchor="middle" dominant-baseline="central">AnySplat</text>
+        </g>
+        <g class="model">
+          <rect x="500" y="220" width="150" height="60" rx="3"/>
+          <text class="t" x="575" y="250" text-anchor="middle" dominant-baseline="central">SAM 2.1</text>
+        </g>
+        <g class="file">
+          <rect x="690" y="70" width="130" height="34" rx="10"/>
+          <text class="t" x="755" y="87" text-anchor="middle" dominant-baseline="central">gaussians.ply</text>
+        </g>
+        <g class="file">
+          <rect x="690" y="116" width="130" height="34" rx="10"/>
+          <text class="t" x="755" y="133" text-anchor="middle" dominant-baseline="central">poses.npz</text>
+        </g>
+        <g class="file">
+          <rect x="690" y="233" width="130" height="34" rx="10"/>
+          <text class="t" x="755" y="250" text-anchor="middle" dominant-baseline="central">masks/</text>
+        </g>
+        <g class="step key">
+          <rect x="860" y="155" width="130" height="50" rx="3"/>
+          <text class="t" x="925" y="180" text-anchor="middle" dominant-baseline="central">mask_splats</text>
+        </g>
+        <g class="step">
+          <rect x="1030" y="155" width="120" height="50" rx="3"/>
+          <text class="t" x="1090" y="180" text-anchor="middle" dominant-baseline="central">level_ply</text>
+        </g>
+        <g class="step">
+          <rect x="1190" y="155" width="120" height="50" rx="3"/>
+          <text class="t" x="1250" y="180" text-anchor="middle" dominant-baseline="central">fixup_ply</text>
+        </g>
+        <g class="file">
+          <rect x="1380" y="155" width="120" height="50" rx="10"/>
+          <text class="t" x="1440" y="180" text-anchor="middle" dominant-baseline="central">Quest 2</text>
+        </g>
+      </svg>
+    </div>
+  </figure>
+</div>
