@@ -1,7 +1,7 @@
 """Read/write 3D Gaussian Splat PLY files in the INRIA convention.
 
-Shared by fixup_ply.py and decimate_ply.py. Only needs numpy + plyfile, both of
-which are already in AnySplat's requirements.txt.
+Shared by mask_splats.py, level_ply.py and fixup_ply.py. Only needs numpy +
+plyfile, both of which are already in AnySplat's requirements.txt.
 
 Storage convention (INRIA 3DGS, what every viewer/importer expects):
   x, y, z            world-space mean

@@ -136,8 +136,8 @@ class Model:
         n = gaussians.means[0].shape[0]
         log(f"produced {n:,} Gaussians")
         if n > 1_000_000:
-            log(f"note: {n:,} is far above a Quest 2 budget (~150-250k). "
-                f"decimate_ply.py handles that in stage E.")
+            log(f"note: {n:,} is far above a Quest 2 budget (~150-250k); "
+                f"masking to the subject brings it down.")
 
         ply_path = outdir / "gaussians.ply"
         t_write = time.perf_counter()

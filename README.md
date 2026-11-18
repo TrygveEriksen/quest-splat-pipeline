@@ -24,7 +24,6 @@ scripts/
   make_masks_sam2.py    A3: per-frame subject masks via SAM 2
   mask_splats.py        B2: keep only Gaussians inside the masks
   fixup_ply.py          C: opacity / axes / metric scale corrections
-  decimate_ply.py       E: prune + subsample to a budget (manual tuning tool, not run by the server)
   level_ply.py          B3: stand the subject upright on its surface, origin at its base
   install.sh            clones AnySplat + SAM 2, fetches weights, creates both envs
   splat_server.py       the entry point: phone upload -> pick in the headset -> gaussians back (LAN)

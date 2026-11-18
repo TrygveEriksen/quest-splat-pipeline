@@ -129,9 +129,7 @@ plus `requestLegacyExternalStorage` to the manifest — it buys nothing here.
 2. Watch **p95**, not mean — sorting spikes are what read as judder.
 3. **Deliberately walk up close to the geometry.** Close-range collapse is the
    documented failure mode across every Quest splat project, caused by a few
-   enormous splats covering the viewport. If it tanks, lower
-   `decimate_ply.py --max-extent-frac` before lowering `--target`.
-4. Sweep `--target` upward (150k → 200k → 250k) until p95 exceeds 13.9 ms.
+   enormous splats covering the viewport.
 
 ## Decision gate
 

@@ -10,7 +10,7 @@ ORDERING: run this on the RAW gaussians.ply straight out of run_anysplat.py,
 BEFORE fixup_ply.py. The predicted poses live in the model's coordinate frame,
 so once fixup_ply has flipped the axes the poses no longer apply.
 
-    run_anysplat.py -> mask_splats.py -> fixup_ply.py -> decimate_ply.py
+    run_anysplat.py -> mask_splats.py -> level_ply.py -> fixup_ply.py
 
 WHY MULTI-VIEW AGREEMENT: a wall directly behind the subject projects *inside*
 the mask from that viewpoint, so a single-view test drags the background along.
@@ -198,7 +198,7 @@ def main():
 
     write_splats(splats.select(keep), args.output)
     log(f"wrote {int(keep.sum()):,} splats -> {args.output}")
-    log("next: fixup_ply.py (axes/opacity/scale), then decimate_ply.py")
+    log("next: level_ply.py, then fixup_ply.py (axes/opacity/scale)")
 
 
 if __name__ == "__main__":
